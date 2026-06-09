@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { apiGet, apiPost } from '../lib/api';
+import { apiGet } from '../lib/api';
+
+// Tất cả request dùng GET để tránh CORS
+async function apiAction(action, params = {}) {
+  return apiGet(action, params);
+}
+async function apiActionData(action, data) {
+  return apiGet(action, { data: encodeURIComponent(JSON.stringify(data)) });
+}
 
 const DAYS = ['Chủ nhật','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7'];
 const COLORS = ['#2563eb','#16a34a','#dc2626','#ea580c','#9333ea','#0891b2','#ca8a04','#be185d'];
@@ -114,7 +122,7 @@ export default function AdminPage() {
     const quotasArr = activeEmps.map(e => ({ empId: e.id, quota: quotas[e.id] || e.quota || 0 }));
 
     setLoading(true);
-    const result = await apiPost('assign', { plan: planArr, quotas: quotasArr });
+    const result = await apiActionData('assign', { plan: planArr, quotas: quotasArr });
     setLoading(false);
 
     if (result.error) {
@@ -130,7 +138,7 @@ export default function AdminPage() {
     if (!empName.trim()) { alert('Nhập tên nhân viên!'); return; }
     const avatar = avatarPreview || empAvatar.trim();
     try {
-      const res = await apiPost('addEmployee', { name: empName.trim(), avatar, quota: 10 });
+      const res = await apiAction('addEmployee', { name: encodeURIComponent(empName.trim()), avatar: encodeURIComponent(avatar), quota: 10 });
       if (res.error) { alert('Lỗi: ' + res.error); return; }
       setEmpName(''); setEmpAvatar(''); setAvatarPreview('');
       loadData();
@@ -171,19 +179,19 @@ export default function AdminPage() {
   }
 
   async function toggleEmp(emp) {
-    await apiPost('updateEmployee', { id: emp.id, active: !emp.active });
+    await apiAction('updateEmployee', { id: emp.id, active: !emp.active });
     loadData();
   }
 
   async function delEmp(id) {
     if (!confirm('Xoá nhân viên này?')) return;
-    await apiPost('deleteEmployee', { id });
+    await apiAction('deleteEmployee', { id });
     loadData();
   }
 
   async function updateQuota(id, val) {
     setQuotas(q => ({ ...q, [id]: Number(val) || 0 }));
-    await apiPost('updateEmployee', { id, quota: Number(val) || 0 });
+    await apiAction('updateEmployee', { id, quota: Number(val) || 0 });
   }
 
   function toggleProd(id) {
