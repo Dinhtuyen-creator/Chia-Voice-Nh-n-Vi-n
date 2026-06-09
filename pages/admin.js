@@ -45,6 +45,8 @@ export default function AdminPage() {
   const [selectedHistDate, setSelectedHistDate] = useState('');
   const [loading, setLoading] = useState(false);
   const [prodLoading, setProdLoading] = useState(false);
+  const [showAllProds, setShowAllProds] = useState(false);
+  const PROD_SHOW_LIMIT = 8;
 
   // Form state
   const [empName, setEmpName] = useState('');
@@ -61,6 +63,7 @@ export default function AdminPage() {
   }
 
   async function loadData() {
+    loadProducts();
     setLoading(true);
     const [emps, dts] = await Promise.all([apiGet('getEmployees'), apiGet('getHistory')]);
     setEmployees(Array.isArray(emps) ? emps : []);
@@ -251,8 +254,8 @@ export default function AdminPage() {
                   <button style={{ ...s.btn, background: '#1a1916', color: '#fff', marginBottom: 12 }} onClick={loadProducts} disabled={prodLoading}>
                     {prodLoading ? 'Đang kéo...' : '🔄 Kéo từ Google Drive'}
                   </button>
-                  <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 10 }}>Tick để chọn phân công hôm nay</div>
-                  {products.map((p, i) => {
+                  <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 10 }}>Tick để chọn phân công hôm nay · {products.length} sản phẩm</div>
+                  {(showAllProds ? products : products.slice(0, PROD_SHOW_LIMIT)).map((p, i) => {
                     const sel = selectedProds.includes(p.id);
                     return (
                       <div key={p.id} style={{ ...s.prodRow, borderColor: sel ? '#2563eb' : '#dddbd2', background: sel ? '#eff4ff' : '#f0efe9' }} onClick={() => toggleProd(p.id)}>
@@ -263,6 +266,11 @@ export default function AdminPage() {
                       </div>
                     );
                   })}
+                  {products.length > PROD_SHOW_LIMIT && (
+                    <button onClick={() => setShowAllProds(v => !v)} style={{ width: '100%', padding: '8px', borderRadius: 8, border: '1px solid #dddbd2', background: '#f0efe9', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#6b6960', fontFamily: 'inherit', marginTop: 4 }}>
+                      {showAllProds ? '▲ Thu gọn' : `▼ Xem thêm ${products.length - PROD_SHOW_LIMIT} sản phẩm`}
+                    </button>
+                  )}
                 </div>
               )}
             </div>
