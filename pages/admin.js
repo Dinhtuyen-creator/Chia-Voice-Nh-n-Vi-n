@@ -46,11 +46,13 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [prodLoading, setProdLoading] = useState(false);
   const [showAllProds, setShowAllProds] = useState(false);
+  const [prodSearch, setProdSearch] = useState('');
   const PROD_SHOW_LIMIT = 8;
 
   // Form state
   const [empName, setEmpName] = useState('');
   const [empAvatar, setEmpAvatar] = useState('');
+  const [avatarPreview, setAvatarPreview] = useState('');
   const [selectedProds, setSelectedProds] = useState([]);
   const [plan, setPlan] = useState({});
   const [quotas, setQuotas] = useState({});
@@ -126,9 +128,25 @@ export default function AdminPage() {
 
   async function addEmp() {
     if (!empName.trim()) return;
-    await apiPost('addEmployee', { name: empName.trim(), avatar: empAvatar.trim(), quota: 10 });
-    setEmpName(''); setEmpAvatar('');
+    const avatar = avatarPreview || empAvatar.trim();
+    await apiPost('addEmployee', { name: empName.trim(), avatar, quota: 10 });
+    setEmpName(''); setEmpAvatar(''); setAvatarPreview('');
     loadData();
+  }
+
+  function handleAvatarPaste(e) {
+    const items = (e.clipboardData || e.originalEvent?.clipboardData)?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        const reader = new FileReader();
+        reader.onload = (ev) => setAvatarPreview(ev.target.result);
+        reader.readAsDataURL(file);
+        e.preventDefault();
+        return;
+      }
+    }
   }
 
   async function toggleEmp(emp) {
@@ -217,10 +235,42 @@ export default function AdminPage() {
               </div>
               {!collapsed.emp && (
                 <div style={s.cardBody}>
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                    <input style={{ ...s.inp, flex: 1 }} placeholder="Tên nhân viên..." value={empName} onChange={e => setEmpName(e.target.value)} />
-                    <input style={{ ...s.inp, flex: 1 }} placeholder="URL avatar" value={empAvatar} onChange={e => setEmpAvatar(e.target.value)} />
-                    <button style={{ ...s.btn, background: '#1a1916', color: '#fff' }} onClick={addEmp}>+</button>
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                      <input style={{ ...s.inp, flex: 1 }} placeholder="Tên nhân viên..." value={empName}
+                        onChange={e => setEmpName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && addEmp()} />
+                      <button style={{ ...s.btn, background: '#1a1916', color: '#fff' }} onClick={addEmp}>+ Thêm</button>
+                    </div>
+                    {/* Avatar paste zone */}
+                    <div
+                      onPaste={handleAvatarPaste}
+                      tabIndex={0}
+                      style={{
+                        border: '2px dashed #dddbd2', borderRadius: 10, padding: '12px 14px',
+                        display: 'flex', alignItems: 'center', gap: 12, cursor: 'text',
+                        background: avatarPreview ? '#f0fdf4' : '#fafaf8',
+                        outline: 'none', transition: 'border-color .15s',
+                      }}
+                      onClick={e => e.currentTarget.focus()}
+                    >
+                      {avatarPreview
+                        ? <img src={avatarPreview} style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover' }} />
+                        : <div style={{ width: 38, height: 38, borderRadius: '50%', background: '#e8e7e0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>👤</div>
+                      }
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: avatarPreview ? '#16a34a' : '#6b6960' }}>
+                          {avatarPreview ? '✅ Đã dán ảnh' : 'Bấm vào đây rồi Ctrl+V để dán avatar'}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#a8a69e', marginTop: 2 }}>Copy ảnh bất kỳ → Ctrl+V vào đây</div>
+                      </div>
+                      {avatarPreview && (
+                        <button onClick={e => { e.stopPropagation(); setAvatarPreview(''); }}
+                          style={{ marginLeft: 'auto', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', color: '#dc2626', fontSize: 11, fontWeight: 700 }}>
+                          Xoá
+                        </button>
+                      )}
+                    </div>
                   </div>
                   {employees.map(emp => (
                     <div key={emp.id} style={{ ...s.empRow, opacity: emp.active ? 1 : 0.45 }}>
@@ -254,20 +304,40 @@ export default function AdminPage() {
                   <button style={{ ...s.btn, background: '#1a1916', color: '#fff', marginBottom: 12 }} onClick={loadProducts} disabled={prodLoading}>
                     {prodLoading ? 'Đang kéo...' : '🔄 Kéo từ Google Drive'}
                   </button>
-                  <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 10 }}>Tick để chọn phân công hôm nay · {products.length} sản phẩm</div>
-                  {(showAllProds ? products : products.slice(0, PROD_SHOW_LIMIT)).map((p, i) => {
-                    const sel = selectedProds.includes(p.id);
-                    return (
-                      <div key={p.id} style={{ ...s.prodRow, borderColor: sel ? '#2563eb' : '#dddbd2', background: sel ? '#eff4ff' : '#f0efe9' }} onClick={() => toggleProd(p.id)}>
-                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[i % COLORS.length], flexShrink: 0 }} />
-                        <div style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{p.name}</div>
-                        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: '#e8e7e0', color: '#6b6960', fontWeight: 700 }}>{p.totalVoices}v</span>
-                        <span style={{ fontSize: 15 }}>{sel ? '✅' : '⬜'}</span>
-                      </div>
-                    );
-                  })}
-                  {products.length > PROD_SHOW_LIMIT && (
-                    <button onClick={() => setShowAllProds(v => !v)} style={{ width: '100%', padding: '8px', borderRadius: 8, border: '1px solid #dddbd2', background: '#f0efe9', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#6b6960', fontFamily: 'inherit', marginTop: 4 }}>
+                  {/* Search */}
+                  <div style={{ position: 'relative', marginBottom: 10 }}>
+                    <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, color: '#a8a69e' }}>🔍</span>
+                    <input
+                      placeholder="Tìm sản phẩm..."
+                      value={prodSearch}
+                      onChange={e => { setProdSearch(e.target.value); setShowAllProds(true); }}
+                      style={{ ...s.inp, paddingLeft: 32, fontSize: 13 }}
+                    />
+                  </div>
+                  <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 8 }}>
+                    {prodSearch ? `${products.filter(p => p.name.toLowerCase().includes(prodSearch.toLowerCase())).length} kết quả` : `${products.length} sản phẩm`}
+                  </div>
+                  {/* Scrollable list */}
+                  <div style={{ maxHeight: showAllProds ? 400 : 320, overflowY: 'auto', paddingRight: 2 }}>
+                    {(prodSearch
+                      ? products.filter(p => p.name.toLowerCase().includes(prodSearch.toLowerCase()))
+                      : showAllProds ? products : products.slice(0, PROD_SHOW_LIMIT)
+                    ).map((p, i) => {
+                      const sel = selectedProds.includes(p.id);
+                      const ci = products.indexOf(p);
+                      return (
+                        <div key={p.id} style={{ ...s.prodRow, borderColor: sel ? '#2563eb' : '#dddbd2', background: sel ? '#eff4ff' : '#f0efe9' }} onClick={() => toggleProd(p.id)}>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[ci % COLORS.length], flexShrink: 0 }} />
+                          <div style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+                          <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: '#e8e7e0', color: '#6b6960', fontWeight: 700 }}>{p.totalVoices}v</span>
+                          <span style={{ fontSize: 15 }}>{sel ? '✅' : '⬜'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Show more / collapse — chỉ hiện khi không đang tìm kiếm */}
+                  {!prodSearch && products.length > PROD_SHOW_LIMIT && (
+                    <button onClick={() => setShowAllProds(v => !v)} style={{ width: '100%', padding: '8px', borderRadius: 8, border: '1px solid #dddbd2', background: '#f0efe9', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#6b6960', fontFamily: 'inherit', marginTop: 6 }}>
                       {showAllProds ? '▲ Thu gọn' : `▼ Xem thêm ${products.length - PROD_SHOW_LIMIT} sản phẩm`}
                     </button>
                   )}
