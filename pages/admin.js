@@ -127,11 +127,16 @@ export default function AdminPage() {
   }
 
   async function addEmp() {
-    if (!empName.trim()) return;
+    if (!empName.trim()) { alert('Nhập tên nhân viên!'); return; }
     const avatar = avatarPreview || empAvatar.trim();
-    await apiPost('addEmployee', { name: empName.trim(), avatar, quota: 10 });
-    setEmpName(''); setEmpAvatar(''); setAvatarPreview('');
-    loadData();
+    try {
+      const res = await apiPost('addEmployee', { name: empName.trim(), avatar, quota: 10 });
+      if (res.error) { alert('Lỗi: ' + res.error); return; }
+      setEmpName(''); setEmpAvatar(''); setAvatarPreview('');
+      loadData();
+    } catch(e) {
+      alert('Không kết nối được Apps Script. Kiểm tra lại URL API.');
+    }
   }
 
   function handleAvatarPaste(e) {
@@ -141,7 +146,23 @@ export default function AdminPage() {
       if (item.type.startsWith('image/')) {
         const file = item.getAsFile();
         const reader = new FileReader();
-        reader.onload = (ev) => setAvatarPreview(ev.target.result);
+        reader.onload = (ev) => {
+          // Nén ảnh xuống 80x80px để tránh base64 quá lớn
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const SIZE = 80;
+            canvas.width = SIZE; canvas.height = SIZE;
+            const ctx = canvas.getContext('2d');
+            // Crop vuông ở giữa
+            const min = Math.min(img.width, img.height);
+            const sx = (img.width - min) / 2;
+            const sy = (img.height - min) / 2;
+            ctx.drawImage(img, sx, sy, min, min, 0, 0, SIZE, SIZE);
+            setAvatarPreview(canvas.toDataURL('image/jpeg', 0.7));
+          };
+          img.src = ev.target.result;
+        };
         reader.readAsDataURL(file);
         e.preventDefault();
         return;
