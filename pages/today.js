@@ -16,9 +16,20 @@ function fmtDate(d) {
 }
 
 function Avatar({ emp, size = 40 }) {
-  const initials = (emp.name||'?').trim().split(' ').slice(-2).map(w => w[0]).join('').toUpperCase();
-  const color = COLORS[(emp.name||'').charCodeAt(0) % COLORS.length];
-  if (emp.avatar) return <img src={emp.avatar} style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover' }} onError={e => e.target.style.display='none'} />;
+  const [failed, setFailed] = useState(false);
+  const name = emp.name || '?';
+  const initials = name.trim().split(' ').filter(Boolean).slice(-2).map(w => w[0]).join('').toUpperCase() || '?';
+  const color = COLORS[name.charCodeAt(0) % COLORS.length] || COLORS[0];
+  useEffect(() => setFailed(false), [emp.avatar]);
+  if (emp.avatar && !failed) {
+    return (
+      <img
+        src={emp.avatar}
+        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
   return (
     <div style={{ width: size, height: size, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 800, fontSize: size * 0.35, flexShrink: 0 }}>
       {initials}
