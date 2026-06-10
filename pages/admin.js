@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { apiGet } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 
 // Tất cả request dùng GET để tránh CORS
 async function apiAction(action, params = {}) {
@@ -23,9 +23,20 @@ function fmtDate(d) {
 }
 
 function Avatar({ emp, size = 38 }) {
-  const initials = emp.name.trim().split(' ').slice(-2).map(w => w[0]).join('').toUpperCase();
-  const color = COLORS[emp.name.charCodeAt(0) % COLORS.length];
-  if (emp.avatar) return <img src={emp.avatar} style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />;
+  const [failed, setFailed] = useState(false);
+  const name = emp.name || '?';
+  const initials = name.trim().split(' ').filter(Boolean).slice(-2).map(w => w[0]).join('').toUpperCase() || '?';
+  const color = COLORS[name.charCodeAt(0) % COLORS.length] || COLORS[0];
+  useEffect(() => setFailed(false), [emp.avatar]);
+  if (emp.avatar && !failed) {
+    return (
+      <img
+        src={emp.avatar}
+        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
   return (
     <div style={{ width: size, height: size, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 800, fontSize: Math.floor(size * 0.35), flexShrink: 0 }}>
       {initials}
@@ -141,9 +152,10 @@ export default function AdminPage() {
 
   async function addEmp() {
     if (!empName.trim()) { alert('Nhập tên nhân viên!'); return; }
-    const avatar = avatarPreview || empAvatar.trim();
+    const avatarBase64 = avatarPreview && avatarPreview.startsWith('data:image/') ? avatarPreview : '';
+    const avatar = avatarBase64 ? '' : empAvatar.trim();
     try {
-      const res = await apiAction('addEmployee', { name: encodeURIComponent(empName.trim()), avatar: encodeURIComponent(avatar), quota: 10 });
+      const res = await apiPost('addEmployeeWithAvatar', { name: empName.trim(), quota: 10, avatarBase64, avatar });
       if (res.error) { alert('Lỗi: ' + res.error); return; }
       setEmpName(''); setEmpAvatar(''); setAvatarPreview('');
       loadData();
@@ -305,6 +317,9 @@ export default function AdminPage() {
                         </button>
                       )}
                     </div>
+                    <input style={{ ...s.inp, marginTop: 8 }} placeholder="Link avatar (tuỳ chọn)..." value={empAvatar}
+                      onChange={e => setEmpAvatar(e.target.value)}
+                      disabled={!!avatarPreview} />
                   </div>
                   {employees.map(emp => (
                     <div key={emp.id} style={{ ...s.empRow, opacity: emp.active ? 1 : 0.45 }}>
