@@ -13,8 +13,13 @@ const DAYS = ['Chủ nhật','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','
 const COLORS = ['#2563eb','#16a34a','#dc2626','#ea580c','#9333ea','#0891b2','#ca8a04','#be185d'];
 
 function fmtDate(d) {
-  const dt = d ? new Date(d + 'T00:00:00') : new Date();
-  return `${DAYS[dt.getDay()]}, ${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`;
+  try {
+    if (!d) { const dt = new Date(); return `${DAYS[dt.getDay()]}, ${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`; }
+    const parts = String(d).split('-');
+    if (parts.length !== 3) return String(d);
+    const dt = new Date(Number(parts[0]), Number(parts[1])-1, Number(parts[2]));
+    return `${DAYS[dt.getDay()]}, ${String(dt.getDate()).padStart(2,'0')}/${String(dt.getMonth()+1).padStart(2,'0')}/${dt.getFullYear()}`;
+  } catch(e) { return String(d); }
 }
 
 function Avatar({ emp, size = 38 }) {
@@ -77,7 +82,7 @@ export default function AdminPage() {
     setLoading(true);
     const [emps, dts] = await Promise.all([apiGet('getEmployees'), apiGet('getHistory')]);
     setEmployees(Array.isArray(emps) ? emps : []);
-    setDates(Array.isArray(dts) ? dts : []);
+    setDates(Array.isArray(dts) ? dts.filter(d => d && String(d).match(/^\d{4}-\d{2}-\d{2}$/)) : []);
     const q = {};
     (Array.isArray(emps) ? emps : []).forEach(e => q[e.id] = e.quota || 10);
     setQuotas(q);
