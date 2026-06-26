@@ -22,6 +22,10 @@ function fmtDate(d) {
   } catch(e) { return String(d); }
 }
 
+function parseVoiceList(text) {
+  return String(text || '').split(/[,\s]+/).map(v => parseInt(v, 10)).filter(Boolean);
+}
+
 function Avatar({ emp, size = 38 }) {
   const [failed, setFailed] = useState(false);
   const name = emp.name || '?';
@@ -79,10 +83,15 @@ export default function AdminPage() {
   const [avatarPreview, setAvatarPreview] = useState('');
   const [selectedProds, setSelectedProds] = useState([]);
   const [plan, setPlan] = useState({});
+  const [assignDate, setAssignDate] = useState('');
   const [quotas, setQuotas] = useState({});
   const [assignResult, setAssignResult] = useState(null);
   const [assignMsg, setAssignMsg] = useState({ text: '', type: '' });
-  const [collapsed, setCollapsed] = useState({ emp: false, prod: false, assign: false, hist: false });
+  const [collapsed, setCollapsed] = useState({ emp: false, prod: false, unassigned: true, assign: false, hist: false });
+  const [dateWarning, setDateWarning] = useState(null);
+  const [unassignedProducts, setUnassignedProducts] = useState([]);
+  const [histEditMode, setHistEditMode] = useState(false);
+  const [histAdd, setHistAdd] = useState({ empId: '', prodId: '', voices: '' });
 
   function toggleCollapse(key) {
     setCollapsed(c => ({ ...c, [key]: !c[key] }));
@@ -91,9 +100,10 @@ export default function AdminPage() {
   async function loadData() {
     loadProducts();
     setLoading(true);
-    const [emps, dts] = await Promise.all([apiGet('getEmployees'), apiGet('getHistory')]);
+    const [emps, dts, unassigned] = await Promise.all([apiGet('getEmployees'), apiGet('getHistory'), apiGet('getUnassignedProducts')]);
     setEmployees(Array.isArray(emps) ? emps : []);
     setDates(Array.isArray(dts) ? dts.filter(d => d && String(d).match(/^\d{4}-\d{2}-\d{2}$/)) : []);
+    setUnassignedProducts(Array.isArray(unassigned) ? unassigned : []);
     const q = {};
     (Array.isArray(emps) ? emps : []).forEach(e => q[e.id] = e.quota || 10);
     setQuotas(q);
@@ -106,6 +116,7 @@ export default function AdminPage() {
     setProducts(Array.isArray(prods) ? prods : []);
     setSelectedProds([]);
     setPlan({});
+    setAssignDate('');
     setProdLoading(false);
   }
 
@@ -118,12 +129,21 @@ export default function AdminPage() {
     }
   }
 
-  const totalPlan = selectedProds.reduce((s, id) => s + (plan[id] || 0), 0);
+  const totalPlan = selectedProds.reduce((s, id) => s + (Number(plan[id]) || 0), 0);
   const activeEmps = employees.filter(e => e.active);
-  const totalQuota = activeEmps.reduce((s, e) => s + (quotas[e.id] || e.quota || 0), 0);
+  const totalQuota = activeEmps.reduce((s, e) => s + (Number(quotas[e.id]) || e.quota || 0), 0);
+  const unassignedDisplayProducts = unassignedProducts.map(item => {
+    const prod = products.find(p => String(p.id) === String(item.id) || String(p.name) === String(item.name));
+    return prod ? { ...prod, lastAssignedDate: item.lastAssignedDate || '' } : null;
+  }).filter(Boolean);
 
-  async function doAssign() {
+  async function submitAssign(options = {}) {
     if (selectedProds.length === 0) { setAssignMsg({ text: '❌ Chưa chọn sản phẩm!', type: 'red' }); return; }
+    const noVoiceProducts = selectedProds.map(id => products.find(p => p.id === id)).filter(p => p && Number(p.totalVoices) === 0);
+    if (noVoiceProducts.length > 0) {
+      setAssignMsg({ text: '❌ Các sản phẩm chưa có voice: ' + noVoiceProducts.map(p => p.name).join(', '), type: 'red' });
+      return;
+    }
     if (totalPlan === 0) { setAssignMsg({ text: '❌ Chưa nhập số voice!', type: 'red' }); return; }
     if (totalPlan !== totalQuota) {
       setAssignMsg({ text: `❌ Tổng voice (${totalPlan}) ≠ tổng quota (${totalQuota}). Lệch ${Math.abs(totalPlan - totalQuota)}!`, type: 'red' });
@@ -132,22 +152,43 @@ export default function AdminPage() {
 
     const planArr = selectedProds.map(id => {
       const prod = products.find(p => p.id === id);
-      return { prodId: id, prodName: prod.name, driveUrl: prod.driveUrl, totalVoices: prod.totalVoices, voiceCount: plan[id] || 0 };
+      return { prodId: id, prodName: prod.name, driveUrl: prod.driveUrl, totalVoices: prod.totalVoices, voiceCount: Number(plan[id]) || 0 };
     }).filter(p => p.voiceCount > 0);
 
-    const quotasArr = activeEmps.map(e => ({ empId: e.id, quota: quotas[e.id] || e.quota || 0 }));
+    const quotasArr = activeEmps.map(e => ({ empId: e.id, quota: Number(quotas[e.id]) || e.quota || 0 }));
 
     setLoading(true);
-    const result = await apiActionData('assign', { plan: planArr, quotas: quotasArr });
+    const result = await apiActionData('assign', {
+      plan: planArr,
+      quotas: quotasArr,
+      date: options.date || assignDate || undefined,
+      allowOverwrite: !!options.allowOverwrite,
+    });
     setLoading(false);
 
-    if (result.error) {
+    if (result.warning === 'DATE_EXISTS') {
+      setDateWarning({ ...result, planArr, quotasArr });
+      setAssignMsg({ text: '⚠️ ' + result.message, type: 'red' });
+    } else if (result.error) {
       setAssignMsg({ text: '❌ ' + result.error, type: 'red' });
     } else {
-      setAssignMsg({ text: '✅ Phân công thành công!', type: 'green' });
+      setDateWarning(null);
+      setAssignMsg({ text: `✅ Phân công thành công cho ngày ${fmtDate(result.date)}!`, type: 'green' });
       setAssignResult(result);
       loadData();
     }
+  }
+
+  async function doAssign() {
+    submitAssign({ date: assignDate || undefined });
+  }
+
+  async function resolveDateWarning(mode) {
+    const warning = dateWarning;
+    setDateWarning(null);
+    if (!warning || mode === 'cancel') return;
+    if (mode === 'overwrite') await submitAssign({ date: warning.date, allowOverwrite: true });
+    if (mode === 'suggested') await submitAssign({ date: warning.suggestedDate, allowOverwrite: false });
   }
 
   async function addEmp() {
@@ -207,8 +248,14 @@ export default function AdminPage() {
   }
 
   async function updateQuota(id, val) {
-    setQuotas(q => ({ ...q, [id]: Number(val) || 0 }));
-    await apiAction('updateEmployee', { id, quota: Number(val) || 0 });
+    const num = Number(val);
+    if (!val || !Number.isFinite(num) || num < 1) {
+      const emp = employees.find(e => e.id === id);
+      setQuotas(q => ({ ...q, [id]: emp?.quota || 10 }));
+      return;
+    }
+    setQuotas(q => ({ ...q, [id]: num }));
+    await apiAction('updateEmployee', { id, quota: num });
   }
 
   function toggleProd(id) {
@@ -222,8 +269,65 @@ export default function AdminPage() {
 
   async function showHist(date) {
     setSelectedHistDate(date);
+    setHistEditMode(false);
     const data = await apiGet('getToday', { date });
     setHistData(data);
+  }
+
+  function reassignFromHistory() {
+    if (!histData || !selectedHistDate) return;
+    const nextPlan = {};
+    Object.values(histData.byEmployee || {}).forEach(tasks => {
+      (tasks || []).forEach(t => {
+        nextPlan[t.productId] = (Number(nextPlan[t.productId]) || 0) + (t.voices || []).length;
+      });
+    });
+    const ids = Object.keys(nextPlan).filter(id => products.some(p => p.id === id));
+    if (ids.length === 0) { alert('Ngày này chưa có sản phẩm để phân công lại.'); return; }
+    setSelectedProds(ids);
+    setPlan(nextPlan);
+    setAssignDate(selectedHistDate);
+    setCollapsed(c => ({ ...c, assign: false }));
+    setAssignMsg({ text: `✅ Đã nạp lịch ${fmtDate(selectedHistDate)} vào khung phân công lại.`, type: 'green' });
+  }
+
+  async function addHistoryTaskFromForm() {
+    const empId = histAdd.empId || activeEmps[0]?.id || employees[0]?.id || '';
+    const prodId = histAdd.prodId || products[0]?.id || '';
+    const prod = products.find(p => p.id === prodId);
+    const voices = parseVoiceList(histAdd.voices);
+    if (!selectedHistDate || !empId || !prod || voices.length === 0) { alert('Chọn nhân viên, sản phẩm và nhập danh sách voice.'); return; }
+    const res = await apiActionData('addHistoryTask', {
+      date: selectedHistDate,
+      empId,
+      prodId: prod.id,
+      prodName: prod.name,
+      driveUrl: prod.driveUrl,
+      voices,
+    });
+    if (res.error) { alert('Lỗi: ' + res.error); return; }
+    setHistAdd(h => ({ ...h, voices: '' }));
+    showHist(selectedHistDate);
+    loadData();
+  }
+
+  async function editHistoryTask(date, empId, task) {
+    const current = (task.voices || []).join(', ');
+    const next = prompt('Nhập lại danh sách số voice:', current);
+    if (next === null) return;
+    const voices = parseVoiceList(next);
+    if (voices.length === 0) { alert('Danh sách voice không hợp lệ.'); return; }
+    const res = await apiActionData('updateHistoryTask', { date, empId, prodId: task.productId, voices });
+    if (res.error) { alert('Lỗi: ' + res.error); return; }
+    showHist(date);
+  }
+
+  async function deleteHistoryTask(date, empId, task) {
+    if (!confirm('Xoá task này?')) return;
+    const res = await apiActionData('deleteHistoryTask', { date, empId, prodId: task.productId });
+    if (res.error) { alert('Lỗi: ' + res.error); return; }
+    showHist(date);
+    loadData();
   }
 
   if (!authed) return (
@@ -254,6 +358,18 @@ export default function AdminPage() {
       </div>
 
       <div style={{ padding: 20, maxWidth: 1100, margin: '0 auto' }}>
+        {dateWarning && (
+          <div style={{ ...s.card, borderColor: '#fde68a', background: '#fefce8' }}>
+            <div style={{ padding: '14px 18px' }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: '#ca8a04', marginBottom: 8 }}>{dateWarning.message}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <button style={{ ...s.btn, background: '#dc2626', color: '#fff' }} onClick={() => resolveDateWarning('overwrite')}>Ghi đè ngày này</button>
+                <button style={{ ...s.btn, background: '#2563eb', color: '#fff' }} onClick={() => resolveDateWarning('suggested')}>Chuyển sang {fmtDate(dateWarning.suggestedDate)}</button>
+                <button style={{ ...s.btn, background: '#fff', color: '#6b6960', border: '1px solid #dddbd2' }} onClick={() => resolveDateWarning('cancel')}>Hủy</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Stats */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 14 }}>
@@ -328,8 +444,9 @@ export default function AdminPage() {
                         <div style={{ fontWeight: 700, fontSize: 13 }}>{emp.name}</div>
                         <div style={{ fontSize: 11, color: '#6b6960' }}>{emp.active ? '🟢 Active' : '⛔ Off'}</div>
                       </div>
-                      <input type="number" min="1" value={quotas[emp.id] || emp.quota || 10}
-                        onChange={e => updateQuota(emp.id, e.target.value)}
+                      <input type="number" min="1" value={quotas[emp.id] ?? emp.quota ?? 10}
+                        onChange={e => setQuotas(q => ({ ...q, [emp.id]: e.target.value }))}
+                        onBlur={e => updateQuota(emp.id, e.target.value)}
                         style={{ ...s.inp, width: 65, padding: '5px 8px', fontSize: 13, textAlign: 'center' }} />
                       <span style={{ fontSize: 11, color: '#a8a69e' }}>v/ng</span>
                       <button style={{ ...s.btn, padding: '5px 10px', fontSize: 12, background: emp.active ? '#fef2f2' : '#f0fdf4', color: emp.active ? '#dc2626' : '#16a34a', border: `1px solid ${emp.active ? '#fecaca' : '#bbf7d0'}` }} onClick={() => toggleEmp(emp)}>
@@ -342,56 +459,98 @@ export default function AdminPage() {
               )}
             </div>
 
-            {/* Sản phẩm */}
-            <div style={s.card}>
-              <div style={s.cardHead} onClick={() => toggleCollapse('prod')}>
-                <div style={s.cardTitle}>📦 Sản phẩm ({products.length})</div>
-                <span style={{ fontSize: 12, color: '#a8a69e', transform: collapsed.prod ? 'rotate(-90deg)' : 'none', display: 'inline-block', transition: 'transform .2s' }}>▼</span>
-              </div>
-              {!collapsed.prod && (
-                <div style={s.cardBody}>
-                  <button style={{ ...s.btn, background: '#1a1916', color: '#fff', marginBottom: 12 }} onClick={loadProducts} disabled={prodLoading}>
-                    {prodLoading ? 'Đang kéo...' : '🔄 Kéo từ Google Drive'}
-                  </button>
-                  {/* Search */}
-                  <div style={{ position: 'relative', marginBottom: 10 }}>
-                    <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, color: '#a8a69e' }}>🔍</span>
-                    <input
-                      placeholder="Tìm sản phẩm..."
-                      value={prodSearch}
-                      onChange={e => { setProdSearch(e.target.value); setShowAllProds(true); }}
-                      style={{ ...s.inp, paddingLeft: 32, fontSize: 13 }}
-                    />
-                  </div>
-                  <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 8 }}>
-                    {prodSearch ? `${products.filter(p => p.name.toLowerCase().includes(prodSearch.toLowerCase())).length} kết quả` : `${products.length} sản phẩm`}
-                  </div>
-                  {/* Scrollable list */}
-                  <div style={{ maxHeight: showAllProds ? 400 : 320, overflowY: 'auto', paddingRight: 2 }}>
-                    {(prodSearch
-                      ? products.filter(p => p.name.toLowerCase().includes(prodSearch.toLowerCase()))
-                      : showAllProds ? products : products.slice(0, PROD_SHOW_LIMIT)
-                    ).map((p, i) => {
-                      const sel = selectedProds.includes(p.id);
-                      const ci = products.indexOf(p);
-                      return (
-                        <div key={p.id} style={{ ...s.prodRow, borderColor: sel ? '#2563eb' : '#dddbd2', background: sel ? '#eff4ff' : '#f0efe9' }} onClick={() => toggleProd(p.id)}>
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[ci % COLORS.length], flexShrink: 0 }} />
-                          <div style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{p.name}</div>
-                          <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: '#e8e7e0', color: '#6b6960', fontWeight: 700 }}>{p.totalVoices}v</span>
-                          <span style={{ fontSize: 15 }}>{sel ? '✅' : '⬜'}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {/* Show more / collapse — chỉ hiện khi không đang tìm kiếm */}
-                  {!prodSearch && products.length > PROD_SHOW_LIMIT && (
-                    <button onClick={() => setShowAllProds(v => !v)} style={{ width: '100%', padding: '8px', borderRadius: 8, border: '1px solid #dddbd2', background: '#f0efe9', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#6b6960', fontFamily: 'inherit', marginTop: 6 }}>
-                      {showAllProds ? '▲ Thu gọn' : `▼ Xem thêm ${products.length - PROD_SHOW_LIMIT} sản phẩm`}
-                    </button>
-                  )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+              {/* Sản phẩm */}
+              <div style={s.card}>
+                <div style={s.cardHead} onClick={() => toggleCollapse('prod')}>
+                  <div style={s.cardTitle}>📦 Sản phẩm ({products.length})</div>
+                  <span style={{ fontSize: 12, color: '#a8a69e', transform: collapsed.prod ? 'rotate(-90deg)' : 'none', display: 'inline-block', transition: 'transform .2s' }}>▼</span>
                 </div>
-              )}
+                {!collapsed.prod && (
+                  <div style={s.cardBody}>
+                    <button style={{ ...s.btn, background: '#1a1916', color: '#fff', marginBottom: 12 }} onClick={loadProducts} disabled={prodLoading}>
+                      {prodLoading ? 'Đang kéo...' : '🔄 Kéo từ Google Drive'}
+                    </button>
+                    {/* Search */}
+                    <div style={{ position: 'relative', marginBottom: 10 }}>
+                      <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 14, color: '#a8a69e' }}>🔍</span>
+                      <input
+                        placeholder="Tìm sản phẩm..."
+                        value={prodSearch}
+                        onChange={e => { setProdSearch(e.target.value); setShowAllProds(true); }}
+                        style={{ ...s.inp, paddingLeft: 32, fontSize: 13 }}
+                      />
+                    </div>
+                    <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 8 }}>
+                      {prodSearch ? `${products.filter(p => p.name.toLowerCase().includes(prodSearch.toLowerCase())).length} kết quả` : `${products.length} sản phẩm`}
+                    </div>
+                    {/* Scrollable list */}
+                    <div style={{ maxHeight: showAllProds ? 400 : 320, overflowY: 'auto', paddingRight: 2 }}>
+                      {(prodSearch
+                        ? products.filter(p => p.name.toLowerCase().includes(prodSearch.toLowerCase()))
+                        : showAllProds ? products : products.slice(0, PROD_SHOW_LIMIT)
+                      ).map((p, i) => {
+                        const sel = selectedProds.includes(p.id);
+                        const ci = products.indexOf(p);
+                        return (
+                          <div key={p.id} style={{ ...s.prodRow, borderColor: sel ? '#2563eb' : '#dddbd2', background: sel ? '#eff4ff' : '#f0efe9' }} onClick={() => toggleProd(p.id)}>
+                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[ci % COLORS.length], flexShrink: 0 }} />
+                            <div style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: p.hasNoVoices ? '#fef2f2' : '#e8e7e0', color: p.hasNoVoices ? '#dc2626' : '#6b6960', fontWeight: 700 }}>{p.totalVoices}v</span>
+                            <span style={{ fontSize: 15 }}>{sel ? '✅' : '⬜'}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Show more / collapse — chỉ hiện khi không đang tìm kiếm */}
+                    {!prodSearch && products.length > PROD_SHOW_LIMIT && (
+                      <button onClick={() => setShowAllProds(v => !v)} style={{ width: '100%', padding: '8px', borderRadius: 8, border: '1px solid #dddbd2', background: '#f0efe9', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#6b6960', fontFamily: 'inherit', marginTop: 6 }}>
+                        {showAllProds ? '▲ Thu gọn' : `▼ Xem thêm ${products.length - PROD_SHOW_LIMIT} sản phẩm`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Sản phẩm lâu chưa phân */}
+              <div style={s.card}>
+                <div style={s.cardHead} onClick={() => toggleCollapse('unassigned')}>
+                  <div style={s.cardTitle}>💡 Sản phẩm lâu chưa phân ({unassignedDisplayProducts.length})</div>
+                  <span style={{ fontSize: 12, color: '#a8a69e', transform: collapsed.unassigned ? 'rotate(-90deg)' : 'none', display: 'inline-block', transition: 'transform .2s' }}>▼</span>
+                </div>
+                {!collapsed.unassigned && (
+                  <div style={s.cardBody}>
+                    {unassignedDisplayProducts.length === 0 ? (
+                      <div style={{ fontSize: 13, color: '#a8a69e', padding: '16px 0', textAlign: 'center' }}>Không có sản phẩm lâu chưa phân</div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 11, color: '#a8a69e', marginBottom: 8 }}>
+                          {unassignedDisplayProducts.length} sản phẩm
+                        </div>
+                        <div style={{ maxHeight: 320, overflowY: 'auto', paddingRight: 2 }}>
+                          {unassignedDisplayProducts.map(p => {
+                            const sel = selectedProds.includes(p.id);
+                            const ci = products.indexOf(p);
+                            return (
+                              <div key={p.id} style={{ ...s.prodRow, borderColor: sel ? '#2563eb' : '#dddbd2', background: sel ? '#eff4ff' : '#f0efe9' }} onClick={() => toggleProd(p.id)}>
+                                <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[Math.max(ci, 0) % COLORS.length], flexShrink: 0 }} />
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+                                  <div style={{ fontSize: 11, color: '#a8a69e', marginTop: 2 }}>
+                                    {p.lastAssignedDate ? `Lần cuối: ${fmtDate(p.lastAssignedDate)}` : 'Chưa bao giờ'}
+                                  </div>
+                                </div>
+                                <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 20, background: p.hasNoVoices ? '#fef2f2' : '#e8e7e0', color: p.hasNoVoices ? '#dc2626' : '#6b6960', fontWeight: 700 }}>{p.totalVoices}v</span>
+                                <span style={{ fontSize: 15 }}>{sel ? '✅' : '⬜'}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -399,7 +558,7 @@ export default function AdminPage() {
           <div>
             <div style={s.card}>
               <div style={s.cardHead} onClick={() => toggleCollapse('assign')}>
-                <div style={s.cardTitle}>⚡ Phân công hôm nay — {fmtDate(null)}</div>
+                <div style={s.cardTitle}>⚡ {assignDate ? `Phân công lại — ${fmtDate(assignDate)}` : `Phân công hôm nay — ${fmtDate(null)}`}</div>
                 <span style={{ fontSize: 12, color: '#a8a69e', transform: collapsed.assign ? 'rotate(-90deg)' : 'none', display: 'inline-block', transition: 'transform .2s' }}>▼</span>
               </div>
               {!collapsed.assign && (
@@ -429,8 +588,13 @@ export default function AdminPage() {
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[ci % COLORS.length], flexShrink: 0 }} />
                         <div style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{prod.name}</div>
                         <input type="number" min="1" max={prod.totalVoices} placeholder="Voice..."
-                          value={plan[id] || ''}
-                          onChange={e => setPlan(p => ({ ...p, [id]: parseInt(e.target.value) || 0 }))}
+                          value={plan[id] ?? ''}
+                          onChange={e => setPlan(p => ({ ...p, [id]: e.target.value }))}
+                          onBlur={e => {
+                            const n = Number(e.target.value);
+                            if (e.target.value === '') return;
+                            setPlan(p => ({ ...p, [id]: Math.max(1, Math.min(prod.totalVoices, Number.isFinite(n) ? n : 1)) }));
+                          }}
                           style={{ ...s.inp, width: 85, padding: '6px 10px', fontSize: 13, textAlign: 'center' }} />
                         <span style={{ fontSize: 11, color: '#a8a69e' }}>/{prod.totalVoices}</span>
                         <button style={{ ...s.btn, padding: '4px 8px', fontSize: 11, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }} onClick={() => removePlan(id)}>✕</button>
@@ -446,8 +610,9 @@ export default function AdminPage() {
                     <div key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                       <Avatar emp={emp} size={28} />
                       <span style={{ flex: 1, fontWeight: 600, fontSize: 13 }}>{emp.name}</span>
-                      <input type="number" min="1" value={quotas[emp.id] || emp.quota || 10}
-                        onChange={e => setQuotas(q => ({ ...q, [emp.id]: parseInt(e.target.value) || 0 }))}
+                      <input type="number" min="1" value={quotas[emp.id] ?? emp.quota ?? 10}
+                        onChange={e => setQuotas(q => ({ ...q, [emp.id]: e.target.value }))}
+                        onBlur={e => updateQuota(emp.id, e.target.value)}
                         style={{ ...s.inp, width: 80, padding: '6px 10px', fontSize: 13, textAlign: 'center' }} />
                       <span style={{ fontSize: 11, color: '#a8a69e' }}>video</span>
                     </div>
@@ -458,7 +623,7 @@ export default function AdminPage() {
 
                   <button onClick={doAssign} disabled={loading}
                     style={{ ...s.btn, background: '#2563eb', color: '#fff', width: '100%', justifyContent: 'center', padding: '12px', fontSize: 15, borderRadius: 12, opacity: loading ? 0.5 : 1 }}>
-                    {loading ? 'Đang xử lý...' : '⚡ Phân công ngay'}
+                    {loading ? 'Đang xử lý...' : assignDate ? '⚡ Phân công lại' : '⚡ Phân công ngay'}
                   </button>
 
                   {assignMsg.text && (
@@ -514,6 +679,42 @@ export default function AdminPage() {
                   </button>
                 ))}
               </div>
+              {selectedHistDate && histData && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#6b6960' }}>{fmtDate(selectedHistDate)}</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={reassignFromHistory}
+                      style={{ ...s.btn, background: '#eff4ff', color: '#2563eb', border: '1px solid #bfcffd', padding: '6px 12px', fontSize: 12 }}>
+                      Phân công lại
+                    </button>
+                    <button onClick={() => setHistEditMode(v => !v)}
+                      style={{ ...s.btn, background: histEditMode ? '#1a1916' : '#fff', color: histEditMode ? '#fff' : '#6b6960', border: '1px solid #dddbd2', padding: '6px 12px', fontSize: 12 }}>
+                      Chỉnh sửa
+                    </button>
+                  </div>
+                </div>
+              )}
+              {selectedHistDate && histData && histEditMode && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 8, alignItems: 'center', marginBottom: 14, padding: 10, background: '#f5f4f0', border: '1px solid #dddbd2', borderRadius: 10 }}>
+                  <select value={histAdd.empId} onChange={e => setHistAdd(h => ({ ...h, empId: e.target.value }))}
+                    style={{ ...s.inp, padding: '7px 10px', fontSize: 13 }}>
+                    <option value="">Nhân viên</option>
+                    {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+                  </select>
+                  <select value={histAdd.prodId} onChange={e => setHistAdd(h => ({ ...h, prodId: e.target.value }))}
+                    style={{ ...s.inp, padding: '7px 10px', fontSize: 13 }}>
+                    <option value="">Sản phẩm</option>
+                    {products.map(prod => <option key={prod.id} value={prod.id}>{prod.name}</option>)}
+                  </select>
+                  <input value={histAdd.voices} placeholder="Voice: 1,2,3..."
+                    onChange={e => setHistAdd(h => ({ ...h, voices: e.target.value }))}
+                    style={{ ...s.inp, padding: '7px 10px', fontSize: 13 }} />
+                  <button onClick={addHistoryTaskFromForm}
+                    style={{ ...s.btn, background: '#16a34a', color: '#fff', padding: '7px 12px', fontSize: 12 }}>
+                    + Thêm
+                  </button>
+                </div>
+              )}
               {histData && (
                 <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
                   {Object.keys(histData.byEmployee || {}).filter(id => (histData.byEmployee[id] || []).length > 0).map(eid => {
@@ -527,6 +728,18 @@ export default function AdminPage() {
                             <div key={t.productId} style={{ ...s.taskRow, borderBottom: i < arr.length - 1 ? '1px solid #f0efe9' : 'none' }}>
                               <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 3 }}>{t.productName}</div>
                               <div style={{ fontSize: 12, color: '#6b6960', fontFamily: 'monospace' }}>Voice: <strong style={{ color: '#2563eb' }}>{t.voices.join(', ')}</strong></div>
+                              {histEditMode && (
+                                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                                  <button onClick={() => editHistoryTask(selectedHistDate, eid, t)}
+                                    style={{ ...s.btn, padding: '4px 8px', fontSize: 11, background: '#eff4ff', color: '#2563eb', border: '1px solid #bfcffd' }}>
+                                    Sửa
+                                  </button>
+                                  <button onClick={() => deleteHistoryTask(selectedHistDate, eid, t)}
+                                    style={{ ...s.btn, padding: '4px 8px', fontSize: 11, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca' }}>
+                                    Xoá
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
